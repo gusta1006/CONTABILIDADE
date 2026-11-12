@@ -29,11 +29,19 @@
       </nav>
 
       <section class="tab-panel active" id="lancamentosPanel" data-panel="lancamentos">
+        <section class="period-panel" aria-label="Mês dos lançamentos">
+          <label for="entryMonthPicker">Mês dos lançamentos</label>
+          <input id="entryMonthPicker" type="month" aria-label="Selecionar mês e ano dos lançamentos">
+          <p>Escolha qualquer mês passado, atual ou futuro para consultar e registrar movimentações.</p>
+        </section>
+
         <div class="summary-grid">
+          <article class="summary-card carry-card"><span>LUCRO DO MÊS ANTERIOR</span><strong id="carryTotal">R$ 0,00</strong></article>
           <article class="summary-card"><span>RECEITAS DO MÊS</span><strong id="incomeTotal">R$ 0,00</strong></article>
           <article class="summary-card"><span>DESPESAS DO MÊS</span><strong id="expenseTotal">R$ 0,00</strong></article>
-          <article class="summary-card balance"><span>SALDO DO MÊS</span><strong id="balanceTotal">R$ 0,00</strong></article>
+          <article class="summary-card balance"><span>SALDO DISPONÍVEL</span><strong id="balanceTotal">R$ 0,00</strong></article>
         </div>
+        <p class="carry-explanation">O <strong>Lucro</strong> é o saldo positivo que sobrou dos meses anteriores. Ele aparece automaticamente no mês seguinte e entra no saldo disponível, sem ser contado novamente como receita.</p>
 
         <section class="panel">
           <div class="panel-title"><div><p class="eyebrow">NOVO REGISTRO</p><h2>Adicionar lançamento</h2></div><span class="title-icon">＋</span></div>
@@ -70,7 +78,7 @@
         </section>
 
         <section class="panel">
-          <div class="panel-title list-title"><div><p class="eyebrow">HISTÓRICO</p><h2>Últimos lançamentos</h2></div><span id="transactionCount" class="count">0 registros</span></div>
+          <div class="panel-title list-title"><div><p class="eyebrow">HISTÓRICO</p><h2>Lançamentos do mês selecionado</h2></div><span id="transactionCount" class="count">0 registros</span></div>
           <div id="transactionList" class="transaction-list"><p class="empty">Nenhum lançamento cadastrado ainda.</p></div>
         </section>
         <div class="backup-row"><button type="button" class="text-button" id="backupButton">↓ Fazer backup dos dados</button><span id="storageNote">Dados salvos neste navegador.</span></div>
@@ -85,7 +93,7 @@
         </section>
 
         <section class="panel report-panel">
-          <div class="report-title"><div><p class="eyebrow">VISÃO ANUAL</p><h3>Despesas mês a mês</h3><p class="muted">Gráfico de barras com o total gasto em cada mês.</p></div><label class="picker-label">Ano<select id="yearPicker"></select></label></div>
+          <div class="report-title"><div><p class="eyebrow">VISÃO ANUAL</p><h3>Despesas mês a mês</h3><p class="muted">Gráfico de barras com o total gasto em cada mês. Digite qualquer ano entre 1 e 9999.</p></div><label class="picker-label">Ano<input id="yearPicker" type="number" min="1" max="9999" step="1" inputmode="numeric" aria-label="Digite o ano do relatório anual"></label></div>
           <div id="annualBars" class="bar-chart" role="img" aria-label="Gráfico de barras das despesas por mês"></div>
           <div class="chart-total"><span>Total de despesas no ano</span><strong id="annualTotal">R$ 0,00</strong></div>
         </section>
