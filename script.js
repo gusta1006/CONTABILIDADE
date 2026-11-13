@@ -9,9 +9,10 @@
 
 const STORAGE_KEY = 'contaFacilTransactions';
 const CATEGORY_KEY = 'contaFacilSimpleCategories';
+const RESERVE_BUCKETS = ['IPVA/IPTU','Poupança','Investimento'];
 const COLORS = ['#176b4a','#e0a33b','#4f83b8','#bd554d','#8a6bb1','#299b9b','#d17b45','#718b50','#cb6b91','#68747d','#a18b56','#597c9e'];
 const defaultCategories = {
-  expense: ['Alimentação','Supermercado','Moradia','Água','Energia elétrica','Internet e telefone','Transporte','Combustível','Saúde','Farmácia','Educação','Lazer','Assinaturas','Cartão de crédito','Impostos','Outras despesas'],
+  expense: ['Alimentação','Supermercado','Moradia','Água','Energia elétrica','Internet e telefone','Transporte','Combustível','Saúde','Farmácia','Educação','Lazer','Assinaturas','Cartão de crédito','Impostos','IPVA','IPTU','Outras despesas'],
   income: ['Salário','Aposentadoria','Renda extra','Serviços','Vendas','Rendimentos','Outras receitas']
 };
 
@@ -51,10 +52,25 @@ let transactions = readJSON(STORAGE_KEY, []);
 if (!Array.isArray(transactions)) transactions = [];
 // Preserva os quatro tipos encontrados em registros das versões anteriores.
 transactions = transactions.filter(t =>
-  t && ['income','expense','investment','saving'].includes(t.type) &&
+  t && ['income','expense','investment','saving','allocation','withdrawal'].includes(t.type) &&
   typeof t.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(t.date) &&
   Number.isFinite(Number(t.amount)) && Number(t.amount) > 0
-).map(t => ({...t, amount:Number(t.amount)}));
+).map(t => {
+  const item = {...t, amount:Number(t.amount)};
+  // Compatibilidade: tipos antigos de poupança/investimento viram destinações.
+  if (item.type === 'saving') {
+    item.type = 'allocation';
+    item.reserveBucket = 'Poupança';
+  } else if (item.type === 'investment') {
+    item.type = 'allocation';
+    item.reserveBucket = 'Investimento';
+  }
+  if (item.type === 'allocation' && !item.reserveBucket) {
+    item.reserveBucket = ['IPVA/IPTU','Poupança','Investimento'].includes(item.category) ? item.category : 'Poupança';
+  }
+  if (item.type === 'expense' && !item.paidFromReserve) item.paidFromReserve = null;
+  return item;
+});
 
 let customCategories = readJSON(CATEGORY_KEY, []);
 if (!Array.isArray(customCategories)) customCategories = [];
@@ -74,6 +90,7 @@ function saveTransactions() {
 }
 
 function allCategories(type) {
+  if (type === 'allocation' || type === 'withdrawal') return RESERVE_BUCKETS;
   return [...defaultCategories[type], ...customCategories.filter(c => c.type === type).map(c => c.name)];
 }
 
@@ -89,6 +106,18 @@ function renderCategoryOptions() {
     select.append(option);
   });
   if ([...select.options].some(o => o.value === previous)) select.value = previous;
+
+  const paymentWrap = $('paymentSourceWrap');
+  paymentWrap.hidden = type !== 'expense';
+  $('categoryForm').hidden = !['income','expense'].includes(type);
+  const hint = $('typeHint');
+  const hints = {
+    expense: 'Despesa: reduz o saldo disponível. Se pagar usando IPVA/IPTU, poupança ou investimento já separado, escolha essa origem para não descontar duas vezes.',
+    income: 'Receita: aumenta o dinheiro disponível e pode gerar lucro para o mês seguinte.',
+    allocation: 'Separar dinheiro: transfere parte do saldo disponível para IPVA/IPTU, poupança ou investimentos. Não é uma despesa.',
+    withdrawal: 'Resgatar valor separado: devolve dinheiro de uma reserva ao saldo disponível. Não é receita.'
+  };
+  hint.textContent = hints[type] || '';
 }
 
 function isValidMonth(value) {
@@ -128,91 +157,147 @@ function monthLabel(month) {
   return date.toLocaleDateString('pt-BR', {month:'long', year:'numeric'});
 }
 
-// Soma receitas e despesas em centavos, sem incluir o "Lucro" virtual.
+// Totais do mês: despesas pagas com reserva continuam sendo despesas reais,
+// mas não reduzem o saldo disponível pela segunda vez.
 function monthlyTotals(month) {
   let incomeCents = 0;
   let expenseCents = 0;
+  let cashExpenseCents = 0;
+  let allocationCents = { 'IPVA/IPTU':0, 'Poupança':0, 'Investimento':0 };
+  let withdrawalCents = 0;
   transactions.forEach(item => {
     if (item.date.slice(0,7) !== month) return;
     if (item.type === 'income') incomeCents += toCents(item.amount);
-    if (item.type === 'expense') expenseCents += toCents(item.amount);
+    if (item.type === 'expense') {
+      expenseCents += toCents(item.amount);
+      if (!item.paidFromReserve) cashExpenseCents += toCents(item.amount);
+    }
+    if (item.type === 'allocation') {
+      const bucket = item.reserveBucket || item.category;
+      if (Object.prototype.hasOwnProperty.call(allocationCents, bucket)) allocationCents[bucket] += toCents(item.amount);
+    }
+    if (item.type === 'withdrawal') withdrawalCents += toCents(item.amount);
   });
-  return {incomeCents, expenseCents};
+  return {incomeCents, expenseCents, cashExpenseCents, allocationCents, withdrawalCents};
 }
 
-/*
-  Calcula o saldo que chega ao mês selecionado.
-  A cada mês: saldo final = lucro trazido + receitas - despesas.
-  Somente valores positivos são transportados para o mês seguinte.
-  Assim, um mesmo valor não é somado novamente às receitas reais.
-*/
+/* Saldo positivo transferido de um mês para o seguinte:
+   lucro + receitas - despesas pagas do saldo - valores separados + resgates.
+   Gastos pagos com reserva não são subtraídos de novo do saldo disponível. */
 function calculateCarryIn(targetMonth) {
   const targetIndex = monthIndex(targetMonth);
   const datedMonths = transactions
     .filter(t => t.date.slice(0,7) < targetMonth)
     .map(t => t.date.slice(0,7));
-
   if (!datedMonths.length) return 0;
   const firstIndex = Math.min(...datedMonths.map(monthIndex));
   if (firstIndex >= targetIndex) return 0;
 
-  // Pré-agrega os registros para calcular até mesmo períodos longos com rapidez.
   const totalsByMonth = new Map();
   transactions.forEach(item => {
     const month = item.date.slice(0,7);
     if (month >= targetMonth) return;
     const key = monthIndex(month);
-    if (!totalsByMonth.has(key)) totalsByMonth.set(key, {incomeCents:0, expenseCents:0});
+    if (!totalsByMonth.has(key)) totalsByMonth.set(key, {incomeCents:0, cashExpenseCents:0, allocationCents:0, withdrawalCents:0});
     const totals = totalsByMonth.get(key);
     if (item.type === 'income') totals.incomeCents += toCents(item.amount);
-    if (item.type === 'expense') totals.expenseCents += toCents(item.amount);
+    if (item.type === 'expense' && !item.paidFromReserve) totals.cashExpenseCents += toCents(item.amount);
+    if (item.type === 'allocation') totals.allocationCents += toCents(item.amount);
+    if (item.type === 'withdrawal') totals.withdrawalCents += toCents(item.amount);
   });
 
   let carryCents = 0;
   for (let index = firstIndex; index < targetIndex; index += 1) {
-    const totals = totalsByMonth.get(index) || {incomeCents:0, expenseCents:0};
-    carryCents = Math.max(0, carryCents + totals.incomeCents - totals.expenseCents);
+    const totals = totalsByMonth.get(index) || {incomeCents:0, cashExpenseCents:0, allocationCents:0, withdrawalCents:0};
+    carryCents = Math.max(0, carryCents + totals.incomeCents - totals.cashExpenseCents - totals.allocationCents + totals.withdrawalCents);
   }
   return carryCents / 100;
+}
+
+function reserveBalance(bucket, throughDate) {
+  let balance = 0;
+  transactions.forEach(item => {
+    if (item.date > throughDate) return;
+    if (item.type === 'allocation' && (item.reserveBucket || item.category) === bucket) balance += toCents(item.amount);
+    if (item.type === 'withdrawal' && item.category === bucket) balance -= toCents(item.amount);
+    if (item.type === 'expense' && item.paidFromReserve === bucket) balance -= toCents(item.amount);
+  });
+  return balance / 100;
+}
+
+function monthReserveBalance(bucket, month) {
+  // O último dia do mês como texto ISO inclui todos os dias válidos do mês.
+  return reserveBalance(bucket, `${month}-31`);
+}
+
+function availableCashAtDate(targetDate) {
+  const month = targetDate.slice(0,7);
+  let cents = toCents(calculateCarryIn(month));
+  transactions.forEach(item => {
+    if (item.date.slice(0,7) !== month || item.date > targetDate) return;
+    const amount = toCents(item.amount);
+    if (item.type === 'income') cents += amount;
+    if (item.type === 'expense' && !item.paidFromReserve) cents -= amount;
+    if (item.type === 'allocation') cents -= amount;
+    if (item.type === 'withdrawal') cents += amount;
+  });
+  return cents / 100;
 }
 
 function getSelectedMonthBalance() {
   const totals = monthlyTotals(selectedEntryMonth);
   const carry = calculateCarryIn(selectedEntryMonth);
-  const balanceCents = toCents(carry) + totals.incomeCents - totals.expenseCents;
+  const balanceCents = toCents(carry) + totals.incomeCents - totals.cashExpenseCents -
+    Object.values(totals.allocationCents).reduce((sum,value) => sum + value, 0) + totals.withdrawalCents;
   return {
     income:totals.incomeCents / 100,
     expenses:totals.expenseCents / 100,
     carry,
-    balance:balanceCents / 100
+    balance:balanceCents / 100,
+    allocations: Object.fromEntries(Object.entries(totals.allocationCents).map(([k,v]) => [k,v/100]))
   };
 }
 
 function updateSummary() {
-  const {income, expenses, carry, balance} = getSelectedMonthBalance();
+  const {income, expenses, carry, balance, allocations} = getSelectedMonthBalance();
   $('carryTotal').textContent = money(carry);
   $('incomeTotal').textContent = money(income);
   $('expenseTotal').textContent = money(expenses);
   $('balanceTotal').textContent = money(balance);
+  $('ipvaBalance').textContent = money(monthReserveBalance('IPVA/IPTU', selectedEntryMonth));
+  $('savingBalance').textContent = money(monthReserveBalance('Poupança', selectedEntryMonth));
+  $('investmentBalance').textContent = money(monthReserveBalance('Investimento', selectedEntryMonth));
+  $('ipvaMonth').textContent = `Separado neste mês: ${money(allocations['IPVA/IPTU'])}`;
+  $('savingMonth').textContent = `Separado neste mês: ${money(allocations['Poupança'])}`;
+  $('investmentMonth').textContent = `Destinado neste mês: ${money(allocations['Investimento'])}`;
 }
 
 function createTransactionRow(item) {
   const row = document.createElement('div');
-  row.className = `transaction-row${item.isCarry ? ' profit-row' : ''}`;
+  row.className = `transaction-row${item.isCarry ? ' profit-row' : ''}${item.type === 'allocation' ? ' allocation-row' : ''}${item.type === 'withdrawal' ? ' withdrawal-row' : ''}`;
 
   const main = document.createElement('div');
   main.className = 'transaction-main';
   const title = document.createElement('strong');
+  const bucket = item.reserveBucket || item.category;
   title.textContent = item.isCarry ? 'Lucro' : (item.description || item.category || 'Lançamento');
   const detail = document.createElement('small');
-  detail.textContent = item.isCarry
-    ? `Saldo positivo que sobrou de ${monthLabel(monthFromIndex(monthIndex(selectedEntryMonth) - 1))}`
-    : `${item.category || 'Sem categoria'} · ${new Date(`${item.date}T12:00:00`).toLocaleDateString('pt-BR')}`;
+  if (item.isCarry) {
+    detail.textContent = `Saldo positivo que sobrou de ${monthLabel(monthFromIndex(monthIndex(selectedEntryMonth) - 1))}`;
+  } else if (item.type === 'allocation') {
+    detail.textContent = `Valor separado para ${bucket} · ${new Date(`${item.date}T12:00:00`).toLocaleDateString('pt-BR')}`;
+  } else if (item.type === 'withdrawal') {
+    detail.textContent = `Resgate de ${item.category} para o saldo disponível · ${new Date(`${item.date}T12:00:00`).toLocaleDateString('pt-BR')}`;
+  } else {
+    const origin = item.paidFromReserve ? ` · pago com ${item.paidFromReserve}` : ' · pago com saldo disponível';
+    detail.textContent = `${item.category || 'Sem categoria'}${item.type === 'expense' ? origin : ''} · ${new Date(`${item.date}T12:00:00`).toLocaleDateString('pt-BR')}`;
+  }
   main.append(title, detail);
 
   const value = document.createElement('span');
-  value.className = `transaction-value ${item.type === 'income' ? 'income' : 'expense'}`;
-  value.textContent = `${item.type === 'income' ? '+' : '−'} ${money(item.amount)}`;
+  value.className = `transaction-value ${item.type === 'income' || item.type === 'withdrawal' || item.isCarry ? 'income' : item.type === 'allocation' ? 'allocation' : 'expense'}`;
+  const sign = item.type === 'income' || item.type === 'withdrawal' || item.isCarry ? '+' : '−';
+  value.textContent = `${sign} ${money(item.amount)}`;
 
   row.append(main, value);
   if (!item.isCarry) {
@@ -256,7 +341,30 @@ function renderTransactions() {
   }
 }
 
+function reserveWouldBecomeNegativeAfterRemoval(removedId) {
+  const events = [];
+  transactions.forEach(item => {
+    if (String(item.id) === String(removedId)) return;
+    if (item.type === 'allocation') events.push({date:item.date, bucket:item.reserveBucket || item.category, delta:toCents(item.amount), priority:0});
+    if (item.type === 'withdrawal') events.push({date:item.date, bucket:item.category, delta:-toCents(item.amount), priority:1});
+    if (item.type === 'expense' && item.paidFromReserve) events.push({date:item.date, bucket:item.paidFromReserve, delta:-toCents(item.amount), priority:2});
+  });
+  events.sort((a,b) => a.date.localeCompare(b.date) || a.priority - b.priority);
+  const balances = new Map();
+  for (const event of events) {
+    const next = (balances.get(event.bucket) || 0) + event.delta;
+    if (next < 0) return true;
+    balances.set(event.bucket,next);
+  }
+  return false;
+}
+
 function deleteTransaction(id) {
+  const itemToDelete = transactions.find(t => String(t.id) === String(id));
+  if (itemToDelete?.type === 'allocation' && reserveWouldBecomeNegativeAfterRemoval(id)) {
+    toast('Não é possível excluir esta reserva: já existem pagamentos ou resgates que dependem dela. Exclua ou ajuste esses registros primeiro.');
+    return;
+  }
   if (!confirm('Deseja excluir este lançamento?')) return;
   const previous = transactions;
   transactions = transactions.filter(t => String(t.id) !== String(id));
@@ -287,6 +395,10 @@ function renderCategoryChips() {
 
 function renderMonthlyChart() {
   const selected = $('monthPicker').value || monthISO();
+  const totals = monthlyTotals(selected);
+  $('reportIpva').textContent = money(totals.allocationCents['IPVA/IPTU'] / 100);
+  $('reportSaving').textContent = money(totals.allocationCents['Poupança'] / 100);
+  $('reportInvestment').textContent = money(totals.allocationCents['Investimento'] / 100);
   const sums = new Map();
   transactions.filter(t => t.date.startsWith(selected) && t.type === 'expense').forEach(item => {
     const name = item.category || 'Outros';
@@ -412,6 +524,7 @@ $('transactionForm').addEventListener('submit', event => {
   const date = $('date').value;
   const category = $('category').value;
   const type = $('type').value;
+  const paymentSource = $('paymentSource').value;
   const amountCents = toCents(amount);
   if (!Number.isFinite(amount) || amountCents < 1 || amount > 1000000000) {
     toast('Informe um valor válido de pelo menos R$ 0,01.');
@@ -422,18 +535,45 @@ $('transactionForm').addEventListener('submit', event => {
     return;
   }
   if (!category) {
-    toast('Escolha uma categoria.');
+    toast('Escolha uma categoria ou finalidade.');
     return;
+  }
+
+  if (type === 'allocation') {
+    const available = availableCashAtDate(date);
+    if (amountCents > toCents(available)) {
+      toast(`O saldo disponível nesta data é ${money(Math.max(0,available))}. Não é possível separar um valor maior que esse saldo.`);
+      return;
+    }
+  }
+
+  let paidFromReserve = null;
+  if (type === 'expense' && paymentSource !== 'cash') {
+    const available = reserveBalance(paymentSource, date);
+    if (amountCents > toCents(available)) {
+      toast(`A reserva ${paymentSource} tem ${money(Math.max(0,available))} disponível nesta data. Escolha outra origem ou ajuste o valor.`);
+      return;
+    }
+    paidFromReserve = paymentSource;
+  }
+  if (type === 'withdrawal') {
+    const available = reserveBalance(category, date);
+    if (amountCents > toCents(available)) {
+      toast(`A reserva ${category} tem ${money(Math.max(0,available))} disponível nesta data.`);
+      return;
+    }
   }
 
   const item = {
     id:`${Date.now()}-${Math.random().toString(16).slice(2)}`,
     mode:'pf',
-    description:$('description').value.trim().slice(0,70) || category,
+    description:$('description').value.trim().slice(0,70) || (type === 'allocation' ? `Separado para ${category}` : type === 'withdrawal' ? `Resgate de ${category}` : category),
     amount:amountCents / 100,
     type,
     category,
-    date
+    date,
+    ...(type === 'allocation' ? {reserveBucket:category} : {}),
+    ...(type === 'expense' ? {paidFromReserve} : {})
   };
   transactions.push(item);
   if (saveTransactions()) {
@@ -441,13 +581,23 @@ $('transactionForm').addEventListener('submit', event => {
     $('description').value = '';
     renderAll();
     $('amount').focus();
-    toast('Lançamento salvo com sucesso.');
+    const messages = {
+      allocation:'Valor separado. Ele não foi contado como despesa.',
+      withdrawal:'Resgate registrado e somado ao saldo disponível.',
+      expense:paidFromReserve ? `Despesa registrada usando a reserva ${paidFromReserve}.` : 'Despesa salva com sucesso.',
+      income:'Receita salva com sucesso.'
+    };
+    toast(messages[type]);
   } else {
     transactions.pop();
   }
 });
 
-$('type').addEventListener('change',renderCategoryOptions);
+$('type').addEventListener('change',() => {
+  // Evita que uma escolha anterior de reserva seja aplicada sem querer à próxima despesa.
+  if ($('type').value === 'expense') $('paymentSource').value = 'cash';
+  renderCategoryOptions();
+});
 
 $('categoryForm').addEventListener('submit',event => {
   event.preventDefault();
@@ -462,6 +612,7 @@ $('categoryForm').addEventListener('submit',event => {
     return;
   }
   const type = $('type').value;
+  if (!['income','expense'].includes(type)) { toast('Categorias personalizadas são para receitas e despesas.'); return; }
   customCategories.push({name,type});
   if (safeSave(CATEGORY_KEY,customCategories)) {
     $('newCategory').value = '';
@@ -500,7 +651,7 @@ document.querySelectorAll('.tab').forEach(button => button.addEventListener('cli
 $('backupButton').addEventListener('click',() => {
   const backup = {
     application:'CONTA FACIL',
-    schemaVersion:3,
+    schemaVersion:4,
     exportedAt:new Date().toISOString(),
     transactions,
     customCategories

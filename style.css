@@ -35,3 +35,21 @@
   .summary-card{min-width:0}
   .summary-card strong{font-size:18px}
 }
+
+
+/* Lançamentos com reservas, poupança e investimentos */
+[hidden]{display:none!important}
+.form-note{margin:0;padding:10px 12px;background:#f3f7f4;border-left:3px solid var(--green);border-radius:6px;color:#506158;font-size:11px;line-height:1.5}
+.reserve-panel{margin-top:0}
+.reserve-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.reserve-card{background:#f7faf8;border:1px solid #e1ebe4;border-radius:11px;padding:15px;min-width:0}
+.reserve-card span{display:block;color:#63736a;font-size:10px;font-weight:800;letter-spacing:1px}
+.reserve-card strong{display:block;margin:8px 0 5px;color:var(--green-dark);font-size:clamp(17px,2vw,22px);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.reserve-card small{display:block;color:var(--muted);font-size:10px;line-height:1.4}
+.transaction-row.allocation-row{background:#fffaf0;border-top-color:#f2ead5}
+.transaction-row.allocation-row .transaction-main strong{color:#85611c}
+.transaction-row.withdrawal-row{background:#f3f7fb}
+.transaction-row.withdrawal-row .transaction-main strong{color:#365c7d}
+.transaction-value.allocation{color:#a17726}
+.report-reserve-grid{margin-top:18px}
+@media(max-width:700px){.reserve-grid{grid-template-columns:1fr}.reserve-card{padding:13px}.report-reserve-grid{margin-top:12px}}
